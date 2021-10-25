@@ -26,13 +26,13 @@ from reid import models
 # from reid.models.csbn import convert_csbn
 # from reid.models.idm_dsbn import convert_dsbn_idm, convert_bn_idm
 # from reid.models.xbm import XBM
-from reid.trainers import Baseline_Trainer, IDM_Trainer, Base_Trainer
+from reid.trainers import SMMTrainer
 from reid.evaluators import Evaluator, extract_features
-from reid.utils.data import CommDataset
+from reid.utils.data import DomainDataset
 from reid.utils.data import IterLoader
 from reid.utils.data import transforms as T
 from reid.utils.data.sampler import RandomMultipleGallerySampler
-from reid.utils.data.preprocessor import Preprocessor
+from reid.utils.data.preprocessor import DomainPreprocessor, Preprocessor
 from reid.utils.logging import Logger
 from reid.utils.serialization import load_checkpoint, save_checkpoint, copy_state_dict
 from reid.utils.rerank import compute_jaccard_distance
@@ -68,7 +68,7 @@ def get_train_loader(args, dataset, height, width, batch_size, workers, num_inst
     else:
         sampler = None
 
-    preprocessor = Preprocessor(train_set, root=dataset.images_dir, transform=train_transformer)
+    preprocessor = DomainPreprocessor(train_set, root=dataset.images_dir, transform=train_transformer)
     loader = DataLoader(preprocessor,
                         batch_size=batch_size,
                         num_workers=workers,
@@ -140,7 +140,7 @@ def main_worker(args):
     for src in args.dataset_source.split(','):
         dataset = get_data(src, args.data_dir, args.combine_all)
         train_items.extend(dataset.train)
-    dataset_source = CommDataset(train_items)
+    dataset_source = DomainDataset(train_items)
 
     print("==> Load target-domain dataset")
     dataset_target = get_data(args.dataset_target, args.data_dir)
@@ -166,7 +166,7 @@ def main_worker(args):
     # lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[8, 20, 40, 60], gamma=0.1)
 
     # Trainer
-    trainer = Base_Trainer(model, args.nclass, margin=args.margin)
+    trainer = SMMTrainer(model, args.nclass, margin=args.margin)
 
     table = []
     header = ['Epoch', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']

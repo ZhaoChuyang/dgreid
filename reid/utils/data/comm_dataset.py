@@ -7,6 +7,35 @@ from .base_dataset import BaseImageDataset
 import scipy.io
 
 
+class CommDataset(BaseImageDataset):
+    """Image Person ReID Dataset, combine all datasets"""
+
+    def __init__(self, img_items, verbose=True):
+        super(CommDataset, self).__init__()
+        self.img_items = img_items
+
+        pid_set = set()
+        cam_set = set()
+        for i in img_items:
+            pid_set.add(i[1])
+            cam_set.add(i[2])
+
+        self.pids = sorted(list(pid_set))
+        self.cams = sorted(list(cam_set))
+
+        self.pid_dict = dict([(p, i) for i, p in enumerate(self.pids)])
+        self.cam_dict = dict([(p, i) for i, p in enumerate(self.cams)])
+
+        train = [(img, self.pid_dict[pid], self.cam_dict[camid]) for img, pid, camid in img_items]
+        self.train = train
+        self.query = []
+        self.gallery = []
+        self.num_train_pids, self.num_train_imgs, self.num_train_cams = self.get_imagedata_info(self.train)
+        if verbose:
+            print("=> Combine-all-reID loaded")
+            self.print_dataset_statistics(self.train, self.query, self.gallery)
+
+
 class DomainDataset(BaseImageDataset):
     """Image Person ReID Dataset, combine all datasets"""
 
@@ -74,35 +103,6 @@ class DomainDataset(BaseImageDataset):
         print("  query    | {:5d} | {:8d} | {:9d}".format(num_query_pids, num_query_imgs, num_query_cams))
         print("  gallery  | {:5d} | {:8d} | {:9d}".format(num_gallery_pids, num_gallery_imgs, num_gallery_cams))
         print("  ----------------------------------------")
-
-
-class CommDataset(BaseImageDataset):
-    """Image Person ReID Dataset, combine all datasets"""
-
-    def __init__(self, img_items, verbose=True):
-        super(CommDataset, self).__init__()
-        self.img_items = img_items
-
-        pid_set = set()
-        cam_set = set()
-        for i in img_items:
-            pid_set.add(i[1])
-            cam_set.add(i[2])
-
-        self.pids = sorted(list(pid_set))
-        self.cams = sorted(list(cam_set))
-
-        self.pid_dict = dict([(p, i) for i, p in enumerate(self.pids)])
-        self.cam_dict = dict([(p, i) for i, p in enumerate(self.cams)])
-
-        train = [(img, self.pid_dict[pid], self.cam_dict[camid]) for img, pid, camid in img_items]
-        self.train = train
-        self.query = []
-        self.gallery = []
-        self.num_train_pids, self.num_train_imgs, self.num_train_cams = self.get_imagedata_info(self.train)
-        if verbose:
-            print("=> Combine-all-reID loaded")
-            self.print_dataset_statistics(self.train, self.query, self.gallery)
 
 
 class AttrDataset(BaseImageDataset):

@@ -25,11 +25,42 @@ class Preprocessor(Dataset):
         return self._get_single_item(indices)
 
     def _get_single_item(self, index):
-        try:
-            fname, pid, camid, domain_id = self.dataset[index]
-        except:
-            fname, pid, camid = self.dataset[index]
-            domain_id = 0
+        fname, pid, camid = self.dataset[index]
+
+        # fname, pid, camid = self.dataset[index]
+        fpath = fname
+        if self.root is not None:
+            fpath = osp.join(self.root, fname)
+
+        img = Image.open(fpath).convert('RGB')
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        return {
+            'images': img,
+            'fnames': fname,
+            'pids': pid,
+            'camids': camid,
+            'indices': index,
+        }
+
+
+class DomainPreprocessor(Dataset):
+    def __init__(self, dataset, root=None, transform=None):
+        super(DomainPreprocessor, self).__init__()
+        self.dataset = dataset
+        self.root = root
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, indices):
+        return self._get_single_item(indices)
+
+    def _get_single_item(self, index):
+        fname, pid, camid, domain_id = self.dataset[index]
 
         # fname, pid, camid = self.dataset[index]
         fpath = fname
