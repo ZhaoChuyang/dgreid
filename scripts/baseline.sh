@@ -16,4 +16,4 @@ step_size=30
 -a ${arch} \
 --epochs ${epoch} -b ${batch_size} --iters ${iter} --step-size ${step_size} \
 --logs-dir /data/IDM_logs/DG_${arch}_baseline/${source}-TO-${target}-epo${epoch}-step${step_size}-iter${iter}-batch${batch_size} \
-#--combine-all \
+--combine-all \

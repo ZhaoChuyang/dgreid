@@ -1,5 +1,9 @@
 # https://github.com/naoto0804/pytorch-AdaIN/blob/master/function.py
 
+import random
+import torch
+from torch import nn
+
 
 def calc_mean_std(feat, eps=1e-5):
     # eps is a small value added to the variance to avoid divide-by-zero.
@@ -93,3 +97,22 @@ def coral(source, target):
                         target_f_mean.expand_as(source_f_norm)
 
     return source_f_transfer.view(source.size())
+
+
+class SMMBlock(nn.Module):
+    def __init__(self, lam=0.5, rand=False, learnable=False):
+        super(SMMBlock, self).__init__()
+        self.rand = rand
+        self.lam = lam
+
+    def forward(self, x):
+        if self.rand:
+            lam = random.random()
+            lam = lam + (1-self.lam)
+            self.lam = lam
+
+        content_feat = x
+        batch_indices = torch.randperm(x.shape[0])
+        style_feat = x[batch_indices]
+        mixed_feat = adaptive_instance_normalization_v2(content_feat, style_feat, self.lam)
+        return mixed_feat

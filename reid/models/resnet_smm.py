@@ -7,10 +7,10 @@ from torch.nn import init
 import torchvision
 from collections import OrderedDict
 
-from .layers.adain import adaptive_instance_normalization
+from .layers.adain import SMMBlock
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
-           'resnet152']
+           'resnet152', 'resnet50_smm']
 
 
 class ResNet(nn.Module):
@@ -22,8 +22,9 @@ class ResNet(nn.Module):
         152: torchvision.models.resnet152,
     }
 
-    def __init__(self, depth, pretrained=True, cut_at_pooling=False,
-                 num_features=0, norm=False, dropout=0, num_classes=0):
+    def __init__(self, depth, pretrained=True, cut_at_pooling=False, num_features=0,
+                 norm=False, dropout=0, num_classes=0, lam=0.5, rand_lam=False,
+                 learnable_lam=False, smm_stage=-1):
         super(ResNet, self).__init__()
         self.pretrained = pretrained
         self.depth = depth
@@ -32,8 +33,8 @@ class ResNet(nn.Module):
         if depth not in ResNet.__factory:
             raise KeyError("Unsupported depth:", depth)
         resnet = ResNet.__factory[depth](pretrained=pretrained)
-        resnet.layer4[0].conv2.stride = (1,1)
-        resnet.layer4[0].downsample[0].stride = (1,1)
+        resnet.layer4[0].conv2.stride = (1, 1)
+        resnet.layer4[0].downsample[0].stride = (1, 1)
         # self.base = nn.Sequential(
         #     resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
         #     resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4)
@@ -49,8 +50,11 @@ class ResNet(nn.Module):
         self.layer3 = resnet.layer3
         self.layer4 = resnet.layer4
 
-
         self.gap = nn.AdaptiveAvgPool2d(1)
+
+        # SMM Block
+        self.smm_stage = smm_stage
+        self.smm_block = SMMBlock(lam, rand=rand_lam, learnable=learnable_lam)
 
         if not self.cut_at_pooling:
             self.num_features = num_features
@@ -85,7 +89,16 @@ class ResNet(nn.Module):
 
     def forward(self, x, output_prob=False):
 
+        if self.smm_stage == -1 and self.training:
+            mixed_x = self.smm_block(x)
+            x = torch.cat([x, mixed_x], dim=0)
+
         x = self.conv(x)
+
+        if self.smm_stage == 1 and self.training:
+            mixed_x = self.smm_block(x)
+            x = torch.cat([x, mixed_x], dim=0)
+
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -102,8 +115,7 @@ class ResNet(nn.Module):
         else:
             bn_x = self.feat_bn(x)
 
-
-        if (self.training is False and output_prob is False):
+        if self.training is False and output_prob is False:
             bn_x = F.normalize(bn_x)
             return bn_x
 
@@ -121,9 +133,15 @@ class ResNet(nn.Module):
             return bn_x
 
         if self.norm:
-            return prob, x, norm_bn_x
+            ori_prob, mixed_prob = torch.chunk(prob, 2, dim=0)
+            ori_x, mixed_x = torch.chunk(x, 2, dim=0)
+            ori_norm_bn_x, mixed_norm_bn_x = torch.chunk(norm_bn_x, 2, dim=0)
+            return [ori_prob, mixed_prob], [ori_x, mixed_x], [ori_norm_bn_x, mixed_norm_bn_x]
         else:
-            return prob, x
+            ori_prob, mixed_prob = torch.chunk(prob, 2, dim=0)
+            ori_x, mixed_x = torch.chunk(x, 2, dim=0)
+            return [ori_prob, mixed_prob], [ori_x, mixed_x]
+
 
     def reset_params(self):
         for m in self.modules():
@@ -161,3 +179,7 @@ def resnet101(**kwargs):
 
 def resnet152(**kwargs):
     return ResNet(152, **kwargs)
+
+
+def resnet50_smm(**kwargs):
+    return ResNet(50, **kwargs)
