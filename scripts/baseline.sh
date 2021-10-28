@@ -7,7 +7,7 @@ target='market1501'
 #target='viper'
 arch='resnet50'
 epoch=90
-batch_size=128
+batch_size=256
 iter=200
 step_size=30
 

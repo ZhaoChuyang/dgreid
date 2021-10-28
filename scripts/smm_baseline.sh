@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Baseline for Vanilla SMM
+
 # split by ','
 source='dukemtmc,msmt17,cuhk03'
 #source='market1501,dukemtmc'

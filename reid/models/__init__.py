@@ -10,6 +10,8 @@ from .resnet_adv import resnet50_adv
 from .resnet_rsc import resnet50_rsc
 from .resnet_attr import resnet50_attr, resnet50_attr_2
 from .resnet_smm import resnet50_smm
+from .resnet_smm_cy import resnet50_smm_cy
+from .resnet_mde import resnet50_mde
 
 
 __factory = {
@@ -27,6 +29,8 @@ __factory = {
     'resnet50_attr': resnet50_attr,
     'resnet50_attr_2': resnet50_attr_2,
     'resnet50_smm': resnet50_smm,
+    'resnet50_smm_cy': resnet50_smm_cy,
+    'resnet50_mde': resnet50_mde,
 }
 
 

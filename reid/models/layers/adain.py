@@ -101,6 +101,12 @@ def coral(source, target):
 
 class SMMBlock(nn.Module):
     def __init__(self, lam=0.5, rand=False, learnable=False):
+        """
+
+        :param lam: in [0, 1]
+        :param rand: if rand set to True, make lam smaller to make the bounds smaller.
+        :param learnable:
+        """
         super(SMMBlock, self).__init__()
         self.rand = rand
         self.lam = lam
@@ -108,11 +114,12 @@ class SMMBlock(nn.Module):
     def forward(self, x):
         if self.rand:
             lam = random.random()
-            lam = lam + (1-self.lam)
-            self.lam = lam
+            lam = lam * self.lam + (1 - self.lam)
+        else:
+            lam = self.lam
 
         content_feat = x
         batch_indices = torch.randperm(x.shape[0])
         style_feat = x[batch_indices]
-        mixed_feat = adaptive_instance_normalization_v2(content_feat, style_feat, self.lam)
-        return mixed_feat
+        mixed_feat = adaptive_instance_normalization_v2(content_feat, style_feat, lam)
+        return mixed_feat, batch_indices

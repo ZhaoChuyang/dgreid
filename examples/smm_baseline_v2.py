@@ -26,7 +26,7 @@ from reid import models
 # from reid.models.csbn import convert_csbn
 # from reid.models.idm_dsbn import convert_dsbn_idm, convert_bn_idm
 # from reid.models.xbm import XBM
-from reid.trainers import SMMTrainer_v2
+from reid.trainers import SMMTrainer2
 from reid.evaluators import Evaluator, extract_features
 from reid.utils.data import DomainDataset
 from reid.utils.data import IterLoader
@@ -167,7 +167,7 @@ def main_worker(args):
     # lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[8, 20, 40, 60], gamma=0.1)
 
     # Trainer
-    trainer = SMMTrainer_v2(model, args.nclass, margin=args.margin)
+    trainer = SMMTrainer2(model, args.nclass, margin=args.margin)
 
     table = []
     header = ['Epoch', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']

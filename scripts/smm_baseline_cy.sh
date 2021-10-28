@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Baseline for Manifold SMM
+# Baseline for Manifold SMM in two branch setting
 
 # split by ','
 source='dukemtmc,msmt17,cuhk03'
@@ -8,7 +8,7 @@ source='dukemtmc,msmt17,cuhk03'
 target='market1501'
 #target='dukemtmc'
 #target='viper'
-arch='resnet50_smm'
+arch='resnet50_smm_cy'
 epoch=90
 batch_size=256
 iter=200
@@ -17,9 +17,9 @@ smm_stage=1
 
 # lam=0.5 => [0.5, 1]
 # lam=0.3 => [0.7, 1]
-lam=0.5
+lam=1
 
-/usr/bin/python3 examples/smm_baseline_v2.py -ds ${source} \
+/usr/bin/python3 examples/smm_baseline_cy.py -ds ${source} \
 -dt ${target} \
 -a ${arch} \
 --epochs ${epoch} -b ${batch_size} --iters ${iter} --step-size ${step_size} \
