@@ -1992,7 +1992,7 @@ class MLDGTrainer2(object):
         self.criterion_tri = TripletLoss(margin=margin).cuda()
         self.mldg_beta = mldg_beta
 
-    def train(self, epoch, data_loader_source, optimizer, inner_opt_lr=0.00035, print_freq=50, train_iters=400):
+    def train(self, epoch, data_loader_source, optimizer, print_freq=50, train_iters=400):
         # self.criterion_ce = CrossEntropyLabelSmooth(source_classes).cuda()
 
         self.model.train()
@@ -2032,6 +2032,8 @@ class MLDGTrainer2(object):
             inner_net = copy.deepcopy(self.model)
             # inner_net_params = [p for p in inner_net.parameters() if p.requires_grad]
             # outer_net_params = [p for p in self.model.parameters() if p.requires_grad]
+            outer_opt_lr = self.get_lr(optimizer)
+            inner_opt_lr = outer_opt_lr
             inner_optimizer = torch.optim.Adam(inner_net.module.get_params(), lr=inner_opt_lr, weight_decay=5e-4)
             train_inputs = [source_inputs[domain_id]['images'].cuda() for domain_id in train_domains]
             train_targets = [source_inputs[domain_id]['pids'].cuda() for domain_id in train_domains]
@@ -2091,9 +2093,11 @@ class MLDGTrainer2(object):
                 if isinstance(m_outer, nn.BatchNorm2d):
                     m_outer.running_mean.data = m_inner.running_mean.data.clone()
                     m_outer.running_var.data = m_inner.running_var.data.clone()
+                    m_outer.num_batches_tracked.data = m_inner.num_batches_tracked.data.clone()
                 if isinstance(m_outer, nn.BatchNorm1d):
                     m_outer.running_mean.data = m_inner.running_mean.data.clone()
                     m_outer.running_var.data = m_inner.running_var.data.clone()
+                    m_outer.num_batches_tracked.data = m_inner.num_batches_tracked.data.clone()
 
             optimizer.step()
 
@@ -2203,6 +2207,136 @@ class MLDGTrainer2(object):
                               precisions.val, precisions.avg,
                               precisions_inner.val, precisions_inner.avg,
                               precisions_outer.val, precisions_outer.avg,
+                              ))
+
+    def get_lr(self, optimizer):
+        for param_group in optimizer.param_groups:
+            return param_group['lr']
+
+    def _parse_data(self, inputs):
+        imgs = inputs['images']
+        pids = inputs['pids']
+        indexes = inputs['indices']
+        return imgs.cuda(), pids.cuda(), indexes.cuda()
+
+    def _forward(self, inputs):
+        return self.model(inputs)
+
+
+class MDEGTrainer(object):
+    def __init__(self, model, num_classes, num_domains=3, margin=None):
+        super(MDEGTrainer, self).__init__()
+        self.model = model
+        self.num_classes = num_classes
+        self.num_domains = num_domains
+        self.criterion_ce = CrossEntropyLabelSmooth(self.num_classes).cuda()
+        self.criterion_tri = TripletLoss(margin=margin).cuda()
+
+    def train(self, epoch, data_loader_source, optimizer, print_freq=50, train_iters=400):
+        # self.criterion_ce = CrossEntropyLabelSmooth(source_classes).cuda()
+
+        self.model.train()
+
+        batch_time = AverageMeter()
+        data_time = AverageMeter()
+        losses = AverageMeter()
+        losses_ce = AverageMeter()
+        losses_tri = AverageMeter()
+        # losses_xbm = AverageMeter()
+        precisions = AverageMeter()
+        # precisions_t = AverageMeter()
+
+        end = time.time()
+        for i in range(train_iters):
+            # load data
+            source_inputs = [loader.next() for loader in data_loader_source]
+            # target_inputs = data_loader_target.next()
+            data_time.update(time.time() - end)
+
+            # process inputs
+            inputs = [source['images'].cuda() for source in source_inputs]
+            targets = [source['pids'].cuda() for source in source_inputs]
+
+            # t_inputs, t_targets, t_indexes = self._parse_data(target_inputs)
+
+            # arrange batch for domain-specific BN
+            # device_num = torch.cuda.device_count()
+            # B, C, H, W = s_inputs.size()
+            #
+            # def reshape(inputs):
+            #     return inputs.view(device_num, -1, C, H, W)
+            #
+            # s_inputs, t_inputs = reshape(s_inputs), reshape(t_inputs)
+            # inputs = torch.cat((s_inputs, t_inputs), 1).view(-1, C, H, W)
+
+            # targets = torch.cat((s_targets.view(device_num, -1), t_targets.view(device_num, -1)), 1)
+            # targets = targets.view(-1)
+            # forward
+            prob, feats = self._forward(inputs)
+            prob = torch.cat(prob, dim=0)
+            feats = torch.cat(feats, dim=0)
+            targets = torch.cat(targets, dim=0)
+
+            loss_tri = self.criterion_tri(feats, targets)
+            loss_ce = self.criterion_ce(prob, targets)
+            prec,  = accuracy(prob.view(-1, prob.size(-1)).data, targets.data)
+
+            # prob = prob[:, 0:source_classes + target_classes]
+
+            # split feats
+            # ori_feats = feats.view(device_num, -1, feats.size(-1))
+            # feats_s, feats_t = ori_feats.split(ori_feats.size(1) // 2, dim=1)
+            # ori_feats = torch.cat((feats_s, feats_t), 1).view(-1, ori_feats.size(-1))
+
+            # classification+triplet
+            # loss_ce = self.criterion_ce(prob, targets)
+            # loss_tri = self.criterion_tri(feats, targets)
+
+            # enqueue and dequeue for xbm
+            # if use_xbm:
+            #     self.xbm.enqueue_dequeue(ori_feats.detach(), targets.detach())
+            #     xbm_feats, xbm_targets = self.xbm.get()
+            #     loss_xbm = self.criterion_tri_xbm(ori_feats, targets, xbm_feats, xbm_targets)
+            #     losses_xbm.update(loss_xbm.item())
+            #     loss = loss_ce + loss_tri + loss_xbm
+            # else:
+            loss = loss_ce + loss_tri
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # ori_prob = prob.view(device_num, -1, prob.size(-1))
+            # prob_s, prob_t = ori_prob.split(ori_prob.size(1) // 2, dim=1)
+            # prob_s, prob_t = prob_s.contiguous(), prob_t.contiguous()
+
+            # prec_t, = accuracy(prob_t.view(-1, prob_s.size(-1)).data, t_targets.data)
+
+            losses.update(loss.item())
+            losses_ce.update(loss_ce.item())
+            losses_tri.update(loss_tri.item())
+            precisions.update(prec[0])
+
+            # print log
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if (i + 1) % print_freq == 0:
+
+                print('Epoch: [{}][{}/{}]\t'
+                      'Time {:.3f} ({:.3f}) '
+                      'Data {:.3f} ({:.3f}) '
+                      'Loss {:.3f} ({:.3f}) '
+                      'Loss_ce {:.3f} ({:.3f}) '
+                      'Loss_tri {:.3f} ({:.3f}) '
+                      'Prec_s {:.2%} ({:.2%}) '
+                      .format(epoch, i + 1, train_iters,
+                              batch_time.val, batch_time.avg,
+                              data_time.val, data_time.avg,
+                              losses.val, losses.avg,
+                              losses_ce.val, losses_ce.avg,
+                              losses_tri.val, losses_tri.avg,
+                              precisions.val, precisions.avg,
                               ))
 
     def _parse_data(self, inputs):
