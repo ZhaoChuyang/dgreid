@@ -7,10 +7,9 @@ from torch.nn import init
 import torchvision
 from collections import OrderedDict
 
-from .layers.adain import SMMBlock
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
-           'resnet152', 'resnet50_smm']
+           'resnet152', 'resnet50_mldg']
 
 
 class ResNet(nn.Module):
@@ -22,19 +21,19 @@ class ResNet(nn.Module):
         152: torchvision.models.resnet152,
     }
 
-    def __init__(self, depth, pretrained=True, cut_at_pooling=False, num_features=0,
-                 norm=False, dropout=0, num_classes=0, lam=0.5, rand_lam=False,
-                 learnable_lam=False, smm_stage=-1):
+    def __init__(self, depth, pretrained=True, cut_at_pooling=False,
+                 num_features=0, norm=False, dropout=0, num_classes=None):
         super(ResNet, self).__init__()
         self.pretrained = pretrained
         self.depth = depth
         self.cut_at_pooling = cut_at_pooling
+
         # Construct base (pretrained) resnet
         if depth not in ResNet.__factory:
             raise KeyError("Unsupported depth:", depth)
         resnet = ResNet.__factory[depth](pretrained=pretrained)
-        resnet.layer4[0].conv2.stride = (1, 1)
-        resnet.layer4[0].downsample[0].stride = (1, 1)
+        resnet.layer4[0].conv2.stride = (1,1)
+        resnet.layer4[0].downsample[0].stride = (1,1)
         # self.base = nn.Sequential(
         #     resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
         #     resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4)
@@ -51,10 +50,6 @@ class ResNet(nn.Module):
         self.layer4 = resnet.layer4
 
         self.gap = nn.AdaptiveAvgPool2d(1)
-
-        # SMM Block
-        self.smm_stage = smm_stage
-        self.smm_block = SMMBlock(lam, rand=rand_lam, learnable=learnable_lam)
 
         if not self.cut_at_pooling:
             self.num_features = num_features
@@ -78,9 +73,10 @@ class ResNet(nn.Module):
             self.feat_bn.bias.requires_grad_(False)
             if self.dropout > 0:
                 self.drop = nn.Dropout(self.dropout)
-            if self.num_classes > 0:
-                self.classifier = nn.Linear(self.num_features, self.num_classes, bias=False)
-                init.normal_(self.classifier.weight, std=0.001)
+
+            self.classifier = nn.Linear(self.num_features, self.num_classes, bias=False)
+            init.normal_(self.classifier.weight, std=0.001)
+
         init.constant_(self.feat_bn.weight, 1)
         init.constant_(self.feat_bn.bias, 0)
 
@@ -88,18 +84,11 @@ class ResNet(nn.Module):
             self.reset_params()
 
     def forward(self, x, output_prob=False):
-
-        if self.smm_stage == -1 and self.training:
-            mixed_x, _ = self.smm_block(x)
-            x = torch.cat([x, mixed_x], dim=0)
+        if self.training:
+            num_domains = len(x)
+            x = torch.cat(x, dim=0)
 
         x = self.conv(x)
-
-        if self.smm_stage == 1 and self.training:
-            mixed_x, _ = self.smm_block(x)
-            x = torch.cat([x, mixed_x], dim=0)
-            # x = torch.cat([mixed_x, mixed_x], dim=0)
-
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -128,21 +117,12 @@ class ResNet(nn.Module):
         if self.dropout > 0:
             bn_x = self.drop(bn_x)
 
-        if self.num_classes > 0:
-            prob = self.classifier(bn_x)
-        else:
-            return bn_x
+        prob = self.classifier(bn_x)
 
-        if self.norm:
-            ori_prob, mixed_prob = torch.chunk(prob, 2, dim=0)
-            ori_x, mixed_x = torch.chunk(x, 2, dim=0)
-            ori_norm_bn_x, mixed_norm_bn_x = torch.chunk(norm_bn_x, 2, dim=0)
-            return [ori_prob, mixed_prob], [ori_x, mixed_x], [ori_norm_bn_x, mixed_norm_bn_x]
-        else:
-            ori_prob, mixed_prob = torch.chunk(prob, 2, dim=0)
-            ori_x, mixed_x = torch.chunk(x, 2, dim=0)
-            return [ori_prob, mixed_prob], [ori_x, mixed_x]
+        prob = torch.chunk(prob, num_domains, dim=0)
+        x = torch.chunk(x, num_domains, dim=0)
 
+        return prob, x
 
     def reset_params(self):
         for m in self.modules():
@@ -160,6 +140,25 @@ class ResNet(nn.Module):
                 init.normal_(m.weight, std=0.001)
                 if m.bias is not None:
                     init.constant_(m.bias, 0)
+
+    def get_params(self):
+        for param in self.parameters():
+            if param.requires_grad:
+                yield param
+
+    # def train(self, mode=True):
+    #     """
+    #     Override the default train() to freeze the BN parameters
+    #     """
+    #     super().train(mode)
+    #     self.freeze_bn()
+    #
+    # def freeze_bn(self):
+    #     for m in self.modules():
+    #         if isinstance(m, nn.BatchNorm1d):
+    #             m.eval()
+    #         if isinstance(m, nn.BatchNorm2d):
+    #             m.eval()
 
 
 def resnet18(**kwargs):
@@ -182,5 +181,10 @@ def resnet152(**kwargs):
     return ResNet(152, **kwargs)
 
 
-def resnet50_smm(**kwargs):
+def resnet50_mde(**kwargs):
     return ResNet(50, **kwargs)
+
+
+def resnet50_mldg(**kwargs):
+    return ResNet(50, **kwargs)
+

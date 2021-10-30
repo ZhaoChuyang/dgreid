@@ -26,7 +26,7 @@ from reid import models
 # from reid.models.csbn import convert_csbn
 # from reid.models.idm_dsbn import convert_dsbn_idm, convert_bn_idm
 # from reid.models.xbm import XBM
-from reid.trainers import MDETrainer
+from reid.trainers import MLDGTrainer2
 from reid.evaluators import Evaluator, extract_features
 from reid.utils.data import CommDataset
 from reid.utils.data import IterLoader
@@ -117,8 +117,7 @@ def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
 
 
 def create_model(args):
-    model = models.create(args.arch, num_features=args.features, norm=False, dropout=args.dropout, 
-                          num_classes=args.nclass)
+    model = models.create(args.arch, num_features=args.features, norm=False, dropout=args.dropout, num_classes=args.nclass)
 
     # use CUDA
     model.cuda()
@@ -157,7 +156,8 @@ def main_worker(args):
         train_items = dataset.train
         dataset_source.append(CommDataset(train_items))
 
-    # relabel_datasets(dataset_source)
+    # relabel dataset pids to avoid label collision
+    relabel_datasets(dataset_source)
 
     print("==> Load target-domain dataset")
     dataset_target = get_data(args.dataset_target, args.data_dir)
@@ -166,7 +166,7 @@ def main_worker(args):
     train_loader_source = get_train_loader(args, dataset_source, args.height, args.width,
                                            args.batch_size, args.workers, args.num_instances, iters)
 
-    source_classes = [data.num_train_pids for data in dataset_source]
+    source_classes = sum([data.num_train_pids for data in dataset_source])
     args.nclass = source_classes
 
     # Create model
@@ -183,7 +183,7 @@ def main_worker(args):
     # lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[8, 20, 40, 60], gamma=0.1)
 
     # Trainer
-    trainer = MDETrainer(model, args.nclass, margin=args.margin)
+    trainer = MLDGTrainer2(model, args.nclass, margin=args.margin)
 
     table = []
     header = ['Epoch', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']
@@ -223,7 +223,6 @@ def main_worker(args):
                   format(epoch, mAP, best_mAP, ' *' if is_best else ''))
 
         lr_scheduler.step()
-
 
     print ('==> Test with the best model on the target domain:')
     checkpoint = load_checkpoint(osp.join(args.logs_dir, 'model_best.pth.tar'))
