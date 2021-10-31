@@ -26,7 +26,7 @@ from reid import models
 # from reid.models.csbn import convert_csbn
 # from reid.models.idm_dsbn import convert_dsbn_idm, convert_bn_idm
 # from reid.models.xbm import XBM
-from reid.trainers import MLDGTrainer2
+from reid.trainers import MLDGSMMTrainer2
 from reid.evaluators import Evaluator, extract_features
 from reid.utils.data import CommDataset
 from reid.utils.data import IterLoader
@@ -185,7 +185,7 @@ def main_worker(args):
     # lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[8, 20, 40, 60], gamma=0.1)
 
     # Trainer
-    trainer = MLDGTrainer2(model, args.nclass, margin=args.margin, mldg_beta=args.mldg_beta, num_domains=num_domains)
+    trainer = MLDGSMMTrainer2(model, args.nclass, margin=args.margin, mldg_beta=args.mldg_beta, num_domains=num_domains)
 
     table = []
     header = ['Epoch', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']
