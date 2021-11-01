@@ -23,6 +23,7 @@ class VIPeR(BaseImageDataset):
     """
     dataset_dir = 'viper'
     dataset_url = 'http://users.soe.ucsc.edu/~manduchi/VIPeR.v1.0.zip'
+    dataset_name = 'viper'
 
     def __init__(self, root='', split_id=0, verbose=True, combineall=False, **kwargs):
         super(VIPeR, self).__init__()

@@ -26,7 +26,7 @@ from reid import models
 # from reid.models.csbn import convert_csbn
 # from reid.models.idm_dsbn import convert_dsbn_idm, convert_bn_idm
 # from reid.models.xbm import XBM
-from reid.trainers import Baseline_Trainer, IDM_Trainer, Base_Trainer
+from reid.trainers import MLDGSMMTrainer3
 from reid.evaluators import Evaluator, extract_features
 from reid.utils.data import CommDataset
 from reid.utils.data import IterLoader
@@ -39,6 +39,17 @@ from reid.utils.rerank import compute_jaccard_distance
 
 
 start_epoch = best_mAP = 0
+
+
+def relabel_datasets(data):
+    num_pids = 0
+    num_camids = 0
+    for dataset in data:
+        train = [(img, pid + num_pids, camid + num_camids) for img, pid, camid in dataset.train]
+        dataset.train = train
+        num_pids += dataset.num_train_pids
+        num_camids += dataset.num_train_cams
+    print('Totally %d pids, %d camids' % (num_pids, num_camids))
 
 
 def get_data(name, data_dir, combineall=False):
@@ -61,24 +72,27 @@ def get_train_loader(args, dataset, height, width, batch_size, workers, num_inst
              normalizer,
     ])
 
-    train_set = sorted(dataset.train) if trainset is None else sorted(trainset)
-    rmgs_flag = num_instances > 0
-    if rmgs_flag:
-        sampler = RandomMultipleGallerySampler(train_set, num_instances)
-    else:
-        sampler = None
+    train_loaders = []
+    for data in dataset:
+        train_set = sorted(data.train) if trainset is None else sorted(trainset)
+        rmgs_flag = num_instances > 0
+        if rmgs_flag:
+            sampler = RandomMultipleGallerySampler(train_set, num_instances)
+        else:
+            sampler = None
 
-    preprocessor = Preprocessor(train_set, root=dataset.images_dir, transform=train_transformer)
-    loader = DataLoader(preprocessor,
-                        batch_size=batch_size,
-                        num_workers=workers,
-                        sampler=sampler,
-                        shuffle=not rmgs_flag,
-                        pin_memory=False,
-                        drop_last=True)
-    train_loader = IterLoader(loader, length=iters)
+        preprocessor = Preprocessor(train_set, root=data.images_dir, transform=train_transformer)
+        dataloader = DataLoader(preprocessor,
+                                batch_size=batch_size,
+                                num_workers=workers,
+                                sampler=sampler,
+                                shuffle=not rmgs_flag,
+                                pin_memory=False,
+                                drop_last=True)
+        train_loader = IterLoader(dataloader, length=iters)
+        train_loaders.append(train_loader)
 
-    return train_loader
+    return train_loaders
 
 
 def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
@@ -91,7 +105,7 @@ def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
              normalizer
          ])
 
-    if (testset is None):
+    if testset is None:
         testset = list(set(dataset.query) | set(dataset.gallery))
 
     test_loader = DataLoader(
@@ -103,8 +117,7 @@ def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
 
 
 def create_model(args):
-    model = models.create(args.arch, num_features=args.features, norm=False, dropout=args.dropout, 
-                          num_classes=args.nclass)
+    model = models.create(args.arch, num_features=args.features, norm=False, dropout=args.dropout, num_classes=args.nclass)
 
     # use CUDA
     model.cuda()
@@ -136,29 +149,26 @@ def main_worker(args):
     # Create datasets
     iters = args.iters if (args.iters>0) else None
     print("==> Load source-domain dataset")
-    train_items = []
-    for src in args.dataset_source.split(','):
+
+    dataset_source = []
+    dataset_names = args.dataset_source.split(',')
+    num_domains = len(dataset_names)
+    for src in dataset_names:
         dataset = get_data(src, args.data_dir, args.combine_all)
-        train_items.extend(dataset.train)
-    dataset_source = CommDataset(train_items)
+        train_items = dataset.train
+        dataset_source.append(CommDataset(train_items))
+
+    # relabel dataset pids to avoid label collision
+    relabel_datasets(dataset_source)
 
     print("==> Load target-domain dataset")
-    target_loaders = []
-    target_datasets = []
-    target_dataset_names = args.dataset_target.split(',')
-    for target_dataset_name in target_dataset_names:
-        target_dataset = get_data(target_dataset_name, args.data_dir)
-        target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers)
-        target_loaders.append(target_loader)
-        target_datasets.append(target_dataset)
+    dataset_target = get_data(args.dataset_target, args.data_dir)
 
-    # dataset_target = get_data(args.dataset_target, args.data_dir)
-    # test_loader_target = get_test_loader(dataset_target, args.height, args.width, args.batch_size, args.workers)
+    test_loader_target = get_test_loader(dataset_target, args.height, args.width, args.batch_size, args.workers)
     train_loader_source = get_train_loader(args, dataset_source, args.height, args.width,
                                            args.batch_size, args.workers, args.num_instances, iters)
 
-    source_classes = dataset_source.num_train_pids
-
+    source_classes = sum([data.num_train_pids for data in dataset_source])
     args.nclass = source_classes
 
     # Create model
@@ -167,7 +177,6 @@ def main_worker(args):
 
     # Evaluator
     evaluator = Evaluator(model)
-    best_mAP = [0] * len(target_datasets)
 
     # Optimizer
     params = [{"params": [value]} for _, value in model.named_parameters() if value.requires_grad]
@@ -176,84 +185,51 @@ def main_worker(args):
     # lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[8, 20, 40, 60], gamma=0.1)
 
     # Trainer
-    trainer = Base_Trainer(model, args.nclass, margin=args.margin)
+    trainer = MLDGSMMTrainer3(model, args.nclass, margin=args.margin, mldg_beta=args.mldg_beta, num_domains=num_domains)
 
     table = []
-    header = ['Epoch', 'Dataset', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']
+    header = ['Epoch', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']
     table.append(header)
 
     for epoch in range(args.epochs):
 
-        train_loader_source.new_epoch()
+        # train_loader_source.new_epoch()
         # train_loader_target.new_epoch()
         trainer.train(epoch, train_loader_source, optimizer, print_freq=args.print_freq, train_iters=args.iters)
-                      
-        if (epoch+1) % args.eval_step == 0 or (epoch == args.epochs-1):
-            for target_id in range(len(target_datasets)):
-                target_dataset_name = target_dataset_names[target_id]
-                target_dataset = target_datasets[target_id]
-                target_loader = target_loaders[target_id]
-                print('Test on target: ', target_dataset_name)
-                result_dict, mAP = evaluator.evaluate(target_loader, target_dataset.query, target_dataset.gallery,
-                                                      cmc_flag=True)
 
-                # show results in table
-                record = list()
-                record.append(epoch)
-                record.append(target_dataset_name)
-                record.append(result_dict['mAP'])
-                record.append(result_dict['rank-1'])
-                record.append(result_dict['rank-5'])
-                record.append(result_dict['rank-10'])
-                table.append(record)
+        if ((epoch+1)%args.eval_step==0 or (epoch==args.epochs-1)):
 
-                print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
+            print('Test on target: ', args.dataset_target)
+            result_dict, mAP = evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
 
-                is_best = mAP > best_mAP[target_id]
-                best_mAP[target_id] = max(mAP, best_mAP[target_id])
+            # show results in table
+            record = []
+            record.append(epoch)
+            record.append(result_dict['mAP'])
+            record.append(result_dict['rank-1'])
+            record.append(result_dict['rank-5'])
+            record.append(result_dict['rank-10'])
+            table.append(record)
 
-                # save_checkpoint({
-                #     'state_dict': model.state_dict(),
-                #     'epoch': epoch + 1,
-                #     'best_mAP': best_mAP,
-                # }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
+            print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
 
-                print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
-                      format(epoch, mAP, best_mAP[target_id], ' *' if is_best else ''))
+            is_best = (mAP>best_mAP)
+            best_mAP = max(mAP, best_mAP)
+            save_checkpoint({
+                'state_dict': model.state_dict(),
+                'epoch': epoch + 1,
+                'best_mAP': best_mAP,
+            }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
 
-            # print('Test on target: ', args.dataset_target)
-            # result_dict, mAP = evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
-            #
-            # # show results in table
-            # record = []
-            # record.append(epoch)
-            # record.append(target_dataset_name)
-            # record.append(result_dict['mAP'])
-            # record.append(result_dict['rank-1'])
-            # record.append(result_dict['rank-5'])
-            # record.append(result_dict['rank-10'])
-            # table.append(record)
-            #
-            # print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
-            #
-            # is_best = (mAP > best_mAP)
-            # best_mAP = max(mAP, best_mAP)
-            # save_checkpoint({
-            #     'state_dict': model.state_dict(),
-            #     'epoch': epoch + 1,
-            #     'best_mAP': best_mAP,
-            # }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
-            #
-            # print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
-            #       format(epoch, mAP, best_mAP, ' *' if is_best else ''))
+            print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
+                  format(epoch, mAP, best_mAP, ' *' if is_best else ''))
 
         lr_scheduler.step()
 
-
-    # print ('==> Test with the best model on the target domain:')
-    # checkpoint = load_checkpoint(osp.join(args.logs_dir, 'model_best.pth.tar'))
-    # model.load_state_dict(checkpoint['state_dict'])
-    # evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
+    print ('==> Test with the best model on the target domain:')
+    checkpoint = load_checkpoint(osp.join(args.logs_dir, 'model_best.pth.tar'))
+    model.load_state_dict(checkpoint['state_dict'])
+    evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
 
     end_time = time.monotonic()
     print('Total running time: ', timedelta(seconds=end_time - start_time))
@@ -332,5 +308,6 @@ if __name__ == '__main__':
 
     # hbchen
     parser.add_argument('--csdn', type=bool, default=False)
+    parser.add_argument('--mldg-beta', type=float, default=0.5)
     main()
 

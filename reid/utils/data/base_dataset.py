@@ -44,16 +44,17 @@ class BaseDataset(object):
 
     def combine_all(self, train, query, gallery):
         """Combines train, query and gallery in a dataset for training."""
-        combined = train
+        combined = []
 
-        def _combine_data(data):
+        def _combine_data(data, label: str):
             for img_path, pid, camid in data:
-                pid = getattr(self, "dataset_name", "Unknown") + "_test_" + str(pid)
-                camid = getattr(self, "dataset_name", "Unknown") + "_test_" + str(camid)
+                pid = getattr(self, "dataset_name", "Unknown") + label + str(pid)
+                camid = getattr(self, "dataset_name", "Unknown") + label + str(camid)
                 combined.append((img_path, pid, camid))
 
-        _combine_data(query)
-        _combine_data(gallery)
+        _combine_data(train, '_train_')
+        _combine_data(query, '_test_')
+        _combine_data(gallery, '_test_')
 
         return combined
 

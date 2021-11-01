@@ -25,6 +25,7 @@ class PRID(BaseImageDataset):
     dataset_dir = 'prid2011'
     dataset_url = None
     _junk_pids = list(range(201, 750))
+    dataset_name = 'prid2011'
 
     def __init__(self, root='', split_id=0, verbose=True, combineall=False, **kwargs):
         super(PRID, self).__init__()

@@ -20,6 +20,7 @@ class PersonX(BaseImageDataset):
     # images: 9840 (train) + 5136 (query) + 30816 (gallery)
     """
     dataset_dir = 'PersonX'
+    dataset_name = 'PersonX'
 
     def __init__(self, root, verbose=True, **kwargs):
         super(PersonX, self).__init__()

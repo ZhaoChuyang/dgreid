@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # split by ','
-source='dukemtmc,msmt17,cuhk03'
+source='market1501,dukemtmc,cuhk02,cuhk03,cuhksysu'
 #source='market1501,dukemtmc'
-target='market1501'
+target='prid,grid,viper,ilids'
 #target='dukemtmc'
 #target='viper'
 arch='resnet50'

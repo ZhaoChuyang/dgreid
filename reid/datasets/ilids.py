@@ -23,6 +23,7 @@ class iLIDS(BaseImageDataset):
     """
     dataset_dir = 'ilids'
     dataset_url = 'http://www.eecs.qmul.ac.uk/~jason/data/i-LIDS_Pedestrian.tgz'
+    dataset_name = 'ilids'
 
     def __init__(self, root='', split_id=0, verbose=True, combineall=False, **kwargs):
         super(iLIDS, self).__init__()

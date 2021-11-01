@@ -2351,6 +2351,11 @@ class MDEGTrainer(object):
 
 class MLDGSMMTrainer1(object):
     def __init__(self, model, num_classes, num_domains=3, margin=None, mldg_beta=0.5):
+        """
+        划分 Meta-train 和 Meta-test 数据集时，将所有 domain 经过 SMM 后的混合结果作为 Meta-Train 数据集，
+        将所有 domain 上原本的数据作为 Meta-test 数据集。与 Trainer2 的不同在于当前的 Meta-train 和 Meta-test
+        之间的 id 是重合的。
+        """
         super(MLDGSMMTrainer1, self).__init__()
         self.model = model
         self.num_classes = num_classes
@@ -2610,6 +2615,10 @@ class MLDGSMMTrainer1(object):
 
 class MLDGSMMTrainer2(object):
     def __init__(self, model, num_classes, num_domains=3, margin=None, mldg_beta=0.5):
+        """
+        在划分 meta-train 与 meta-test 数据集时，保证这两个数据集中的 id 不重合。即 meta-train 从所有的
+        域中选择一部分 domain 用于混合，meta-test 选择剩余的 domain 的原始数据作为 meta-test 数据集。
+        """
         super(MLDGSMMTrainer2, self).__init__()
         self.model = model
         self.num_classes = num_classes
@@ -2660,7 +2669,8 @@ class MLDGSMMTrainer2(object):
             test_inputs = [source_inputs[test_domain]['images'].cuda()]
             test_targets = [source_inputs[test_domain]['pids'].cuda()]
 
-            train_inputs = self.get_mixed_inputs(train_inputs)
+            # train_inputs = self.get_mixed_inputs(train_inputs)
+            train_inputs = self.get_mixed_inputs_1(train_inputs)
 
             '''
             inner update phase
@@ -2732,69 +2742,6 @@ class MLDGSMMTrainer2(object):
 
             optimizer.step()
 
-            # process inputs
-            # inputs = [source['images'].cuda() for source in source_inputs]
-            # targets = [source['pids'].cuda() for source in source_inputs]
-
-            # t_inputs, t_targets, t_indexes = self._parse_data(target_inputs)
-
-            # arrange batch for domain-specific BN
-            # device_num = torch.cuda.device_count()
-            # B, C, H, W = s_inputs.size()
-            #
-            # def reshape(inputs):
-            #     return inputs.view(device_num, -1, C, H, W)
-            #
-            # s_inputs, t_inputs = reshape(s_inputs), reshape(t_inputs)
-            # inputs = torch.cat((s_inputs, t_inputs), 1).view(-1, C, H, W)
-
-            # targets = torch.cat((s_targets.view(device_num, -1), t_targets.view(device_num, -1)), 1)
-            # targets = targets.view(-1)
-            # forward
-            # prob, feats = self._forward(inputs)
-
-            # loss_ce = 0.
-            # loss_tri = 0.
-            # acc = 0.
-
-            # for domain_id, (cur_prob, cur_feat, target) in enumerate(zip(prob, feats, targets)):
-            #     loss_ce += self.criterion_ce[domain_id](cur_prob, target)
-            #     loss_tri += self.criterion_tri(cur_feat, target)
-            #     acc += accuracy(cur_prob.view(-1, cur_prob.size(-1)).data, target.data)[0]
-
-            # acc /= len(self.num_classes)
-
-            # prob = prob[:, 0:source_classes + target_classes]
-
-            # split feats
-            # ori_feats = feats.view(device_num, -1, feats.size(-1))
-            # feats_s, feats_t = ori_feats.split(ori_feats.size(1) // 2, dim=1)
-            # ori_feats = torch.cat((feats_s, feats_t), 1).view(-1, ori_feats.size(-1))
-
-            # classification+triplet
-            # loss_ce = self.criterion_ce(prob, targets)
-            # loss_tri = self.criterion_tri(feats, targets)
-
-            # enqueue and dequeue for xbm
-            # if use_xbm:
-            #     self.xbm.enqueue_dequeue(ori_feats.detach(), targets.detach())
-            #     xbm_feats, xbm_targets = self.xbm.get()
-            #     loss_xbm = self.criterion_tri_xbm(ori_feats, targets, xbm_feats, xbm_targets)
-            #     losses_xbm.update(loss_xbm.item())
-            #     loss = loss_ce + loss_tri + loss_xbm
-            # else:
-            # loss = loss_ce + loss_tri
-
-            # optimizer.zero_grad()
-            # loss.backward()
-            # optimizer.step()
-
-            # ori_prob = prob.view(device_num, -1, prob.size(-1))
-            # prob_s, prob_t = ori_prob.split(ori_prob.size(1) // 2, dim=1)
-            # prob_s, prob_t = prob_s.contiguous(), prob_t.contiguous()
-
-            # prec_t, = accuracy(prob_t.view(-1, prob_s.size(-1)).data, t_targets.data)
-
             losses.update(objective)
             losses_inner_ce.update(loss_inner_ce.item())
             losses_inner_tri.update(loss_inner_tri.item())
@@ -2849,10 +2796,240 @@ class MLDGSMMTrainer2(object):
         style_inputs = inputs[batch_indices]
         lam = random.random()  # lam in range 0 to 1
         lam = lam * 0.5 + 0.5  # shrink to range 0.5 to 1
+        # lam = 1
         mixed_inputs = adaptive_instance_normalization_v2(inputs, style_inputs, lam)
 
         mixed_inputs = torch.chunk(mixed_inputs, num_domains, dim=0)
         return mixed_inputs
+
+    @torch.no_grad()
+    def get_mixed_inputs_1(self, all_inputs):
+        num_domains = len(all_inputs)
+        all_mixed_inputs = []
+        for inputs in all_inputs:
+            style_domain = random.choice(range(num_domains))
+            batch_indices = torch.randperm(inputs.shape[0])
+            style_inputs = all_inputs[style_domain][batch_indices]
+            lam = 1
+            mixed_inputs = adaptive_instance_normalization_v2(inputs, style_inputs, lam)
+            all_mixed_inputs.append(mixed_inputs)
+        return all_mixed_inputs
+
+    def get_lr(self, optimizer):
+        for param_group in optimizer.param_groups:
+            return param_group['lr']
+
+    def _parse_data(self, inputs):
+        imgs = inputs['images']
+        pids = inputs['pids']
+        indexes = inputs['indices']
+        return imgs.cuda(), pids.cuda(), indexes.cuda()
+
+    def _forward(self, inputs):
+        return self.model(inputs)
+
+
+class MLDGSMMTrainer3(object):
+    def __init__(self, model, num_classes, num_domains=3, margin=None, mldg_beta=0.5):
+        """
+        MLDG + Manifold SMM
+        """
+        super(MLDGSMMTrainer3, self).__init__()
+        self.model = model
+        self.num_classes = num_classes
+        self.num_domains = num_domains
+        self.criterion_ce = CrossEntropyLabelSmooth(self.num_classes).cuda()
+        self.criterion_tri = TripletLoss(margin=margin).cuda()
+        self.mldg_beta = mldg_beta
+
+    def train(self, epoch, data_loader_source, optimizer, print_freq=50, train_iters=400):
+        # self.criterion_ce = CrossEntropyLabelSmooth(source_classes).cuda()
+
+        self.model.train()
+
+        batch_time = AverageMeter()
+        data_time = AverageMeter()
+        losses = AverageMeter()
+        losses_inner = AverageMeter()
+        losses_inner_ce = AverageMeter()
+        losses_inner_tri = AverageMeter()
+        losses_outer = AverageMeter()
+        losses_outer_ce = AverageMeter()
+        losses_outer_tri = AverageMeter()
+        precisions = AverageMeter()
+        precisions_inner = AverageMeter()
+        precisions_outer = AverageMeter()
+
+        end = time.time()
+        for i in range(train_iters):
+            # load data
+            source_inputs = [loader.next() for loader in data_loader_source]
+
+            test_domain = random.choice(range(self.num_domains))
+            train_domains = [d for d in range(self.num_domains) if d != test_domain]
+
+            data_time.update(time.time() - end)
+
+            objective = 0.
+            optimizer.zero_grad()
+            for p in self.model.parameters():
+                if p.grad is None:
+                    p.grad = torch.zeros_like(p)
+
+            '''
+            get meta-train and meta-test datasets
+            '''
+            train_inputs = [source_inputs[domain_id]['images'].cuda() for domain_id in train_domains]
+            train_targets = [source_inputs[domain_id]['pids'].cuda() for domain_id in train_domains]
+            test_inputs = [source_inputs[test_domain]['images'].cuda()]
+            test_targets = [source_inputs[test_domain]['pids'].cuda()]
+
+            # Note: 注意不同混合策略的选择
+            # train_inputs = self.get_mixed_inputs(train_inputs)
+            # train_inputs = self.get_mixed_inputs_1(train_inputs)
+
+            '''
+            inner update phase
+            '''
+            inner_net = copy.deepcopy(self.model)
+            # inner_net_params = [p for p in inner_net.parameters() if p.requires_grad]
+            # outer_net_params = [p for p in self.model.parameters() if p.requires_grad]
+            outer_opt_lr = self.get_lr(optimizer)
+            inner_opt_lr = outer_opt_lr
+            inner_optimizer = torch.optim.Adam(inner_net.module.get_params(), lr=inner_opt_lr, weight_decay=5e-4)
+
+            inner_prob, inner_feat = inner_net(train_inputs)
+            inner_prob = torch.cat(inner_prob, dim=0)
+            inner_feat = torch.cat(inner_feat, dim=0)
+            inner_targets = torch.cat(train_targets, dim=0)
+
+            loss_inner_ce = self.criterion_ce(inner_prob, inner_targets)
+            loss_inner_tri = self.criterion_tri(inner_feat, inner_targets)
+            acc_inner = accuracy(inner_prob.view(-1, inner_prob.size(-1)).data, inner_targets.data)[0]
+            loss_inner = loss_inner_ce + loss_inner_tri
+
+            inner_optimizer.zero_grad()
+            loss_inner.backward()
+            inner_optimizer.step()
+
+            # Now inner_net has accumulated gradients Gi
+            # The clone-network (inner_net) has now parameters P - lr * Gi
+            # Adding the gradient Gi to original network
+            for p_outer, p_inner in zip(self.model.module.get_params(), inner_net.module.get_params()):
+                if p_inner.grad is not None:
+                    assert p_inner.grad.data.shape == p_outer.grad.data.shape
+                    p_outer.grad.data.add_(p_inner.grad.data / self.num_domains)
+
+            objective += loss_inner.item()
+
+            '''
+            outer update phase
+            '''
+            outer_prob, outer_feat = inner_net(test_inputs)
+
+            outer_prob = torch.cat(outer_prob, dim=0)
+            outer_feat = torch.cat(outer_feat, dim=0)
+            test_targets = torch.cat(test_targets, dim=0)
+
+            loss_outer_ce = self.criterion_ce(outer_prob, test_targets)
+            loss_outer_tri = self.criterion_tri(outer_feat, test_targets)
+            acc_outer = accuracy(outer_prob.view(-1, outer_prob.size(-1)).data, test_targets.data)[0]
+            loss_outer = loss_outer_ce + loss_outer_tri
+
+            grad_outer = torch.autograd.grad(loss_outer, inner_net.module.get_params(), allow_unused=True)
+
+            objective += self.mldg_beta * loss_outer.item()
+
+            for p_outer, g_outer in zip(self.model.module.get_params(), grad_outer):
+                if g_outer is not None:
+                    assert g_outer.data.shape == p_outer.grad.data.shape
+                    p_outer.grad.data.add_(self.mldg_beta * g_outer.data / self.num_domains)
+
+            for (n_outer, m_outer), (n_inner, m_inner) in zip(self.model.named_modules(), inner_net.named_modules()):
+                assert n_outer == n_inner
+                if isinstance(m_outer, nn.BatchNorm2d):
+                    m_outer.running_mean.data = m_inner.running_mean.data.clone()
+                    m_outer.running_var.data = m_inner.running_var.data.clone()
+                    m_outer.num_batches_tracked.data = m_inner.num_batches_tracked.data.clone()
+                if isinstance(m_outer, nn.BatchNorm1d):
+                    m_outer.running_mean.data = m_inner.running_mean.data.clone()
+                    m_outer.running_var.data = m_inner.running_var.data.clone()
+                    m_outer.num_batches_tracked.data = m_inner.num_batches_tracked.data.clone()
+
+            optimizer.step()
+
+            losses.update(objective)
+            losses_inner_ce.update(loss_inner_ce.item())
+            losses_inner_tri.update(loss_inner_tri.item())
+            losses_inner.update(loss_inner.item())
+            losses_outer_ce.update(loss_outer_ce.item())
+            losses_outer_tri.update(loss_outer_tri.item())
+            losses_outer.update(loss_outer.item())
+            precisions_inner.update(acc_inner.cpu().numpy()[0])
+            precisions_outer.update(acc_outer.cpu().numpy()[0])
+            precisions.update((acc_inner.cpu().numpy()[0] + acc_outer.cpu().numpy()[0]) / 2)
+
+            # print log
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if (i + 1) % print_freq == 0:
+
+                print('Epoch: [{}][{}/{}]\t'
+                      'Time {:.3f} ({:.3f}) '
+                      'Data {:.3f} ({:.3f}) '
+                      'Loss {:.3f} ({:.3f}) '
+                      'Loss_inner {:.3f} ({:.3f}) '
+                      'Loss_inner_ce {:.3f} ({:.3f}) '
+                      'Loss_inner_tri {:.3f} ({:.3f}) '
+                      'Loss_outer {:.3f} ({:.3f}) '
+                      'Loss_outer_ce {:.3f} ({:.3f}) '
+                      'Loss_outer_tri {:.3f} ({:.3f}) '
+                      'Acc {:.2%} ({:.2%}) '
+                      'Acc_inner {:.2%} ({:.2%}) '
+                      'Acc_outer {:.2%} ({:.2%}) '
+                      .format(epoch, i + 1, train_iters,
+                              batch_time.val, batch_time.avg,
+                              data_time.val, data_time.avg,
+                              losses.val, losses.avg,
+                              losses_inner.val, losses_inner.avg,
+                              losses_inner_ce.val, losses_inner_ce.avg,
+                              losses_inner_tri.val, losses_inner_tri.avg,
+                              losses_outer.val, losses_outer.avg,
+                              losses_outer_ce.val, losses_outer_ce.avg,
+                              losses_outer_tri.val, losses_outer_tri.avg,
+                              precisions.val, precisions.avg,
+                              precisions_inner.val, precisions_inner.avg,
+                              precisions_outer.val, precisions_outer.avg,
+                              ))
+
+    @torch.no_grad()
+    def get_mixed_inputs(self, all_inputs: list):
+        num_domains = len(all_inputs)
+        inputs = torch.cat(all_inputs, dim=0)
+
+        batch_indices = torch.randperm(inputs.shape[0])
+        style_inputs = inputs[batch_indices]
+        # lam = random.random()  # lam in range 0 to 1
+        # lam = lam * 0.5 + 0.5  # shrink to range 0.5 to 1
+        lam = 1
+        mixed_inputs = adaptive_instance_normalization_v2(inputs, style_inputs, lam)
+
+        mixed_inputs = torch.chunk(mixed_inputs, num_domains, dim=0)
+        return mixed_inputs
+
+    @torch.no_grad()
+    def get_mixed_inputs_1(self, all_inputs):
+        num_domains = len(all_inputs)
+        all_mixed_inputs = []
+        for inputs in all_inputs:
+            style_domain = random.choice(range(num_domains))
+            batch_indices = torch.randperm(inputs.shape[0])
+            style_inputs = all_inputs[style_domain][batch_indices]
+            lam = 1
+            mixed_inputs = adaptive_instance_normalization_v2(inputs, style_inputs, lam)
+            all_mixed_inputs.append(mixed_inputs)
+        return all_mixed_inputs
 
     def get_lr(self, optimizer):
         for param_group in optimizer.param_groups:

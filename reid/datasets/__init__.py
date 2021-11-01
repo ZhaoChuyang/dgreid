@@ -11,6 +11,8 @@ from .ilids import iLIDS
 from .grid import GRID
 from .viper import VIPeR
 from .prid import PRID
+from .cuhk02 import CUHK02
+from .cuhksysu import CUHKSYSU
 
 
 __factory = {
@@ -24,6 +26,8 @@ __factory = {
     'grid': GRID,
     'viper': VIPeR,
     'prid': PRID,
+    'cuhk02': CUHK02,
+    'cuhksysu': CUHKSYSU,
 }
 
 

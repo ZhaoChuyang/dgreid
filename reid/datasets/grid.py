@@ -24,6 +24,7 @@ class GRID(BaseImageDataset):
     dataset_dir = 'grid'
     dataset_url = 'http://personal.ie.cuhk.edu.hk/~ccloy/files/datasets/underground_reid.zip'
     _junk_pids = [0]
+    dataset_name = 'grid'
 
     def __init__(self, root, verbose=True, combineall=False, split_id=0, **kwargs):
         super(GRID, self).__init__()
@@ -100,10 +101,15 @@ class GRID(BaseImageDataset):
             for split_idx in range(10):
                 train_idxs = trainIdxAll[split_idx][0][0][2][0].tolist()
                 assert len(train_idxs) == 125
+                # idx2label = {
+                #     idx: label
+                #     for label, idx in enumerate(train_idxs)
+                # }
                 idx2label = {
                     idx: label
                     for label, idx in enumerate(train_idxs)
                 }
+
 
                 train, query, gallery = [], [], []
 
