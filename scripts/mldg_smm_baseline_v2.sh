@@ -7,7 +7,7 @@ target='market1501'
 #target='viper'
 arch='resnet50_mldg'
 epoch=90
-batch_size=128  # 128
+batch_size=120  # 128
 iter=200
 step_size=20  # 30
 eval_step=10
@@ -20,4 +20,4 @@ mldg_beta=0.5
 --logs-dir /data/IDM_logs/DG_${arch}_baseline/${source}-TO-${target}-epo${epoch}-step${step_size}-iter${iter}-batch${batch_size} \
 --eval-step ${eval_step} \
 --mldg-beta ${mldg_beta} \
-#--combine-all \
+--combine-all \

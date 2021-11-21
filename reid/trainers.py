@@ -2652,6 +2652,8 @@ class MLDGSMMTrainer2(object):
 
             test_domain = random.choice(range(self.num_domains))
             train_domains = [d for d in range(self.num_domains) if d != test_domain]
+            # num_train_domains = len(train_domains)
+            # num_test_domains = 1
 
             data_time.update(time.time() - end)
 
@@ -2670,7 +2672,11 @@ class MLDGSMMTrainer2(object):
             test_targets = [source_inputs[test_domain]['pids'].cuda()]
 
             # train_inputs = self.get_mixed_inputs(train_inputs)
-            train_inputs = self.get_mixed_inputs_1(train_inputs)
+            # train_inputs = self.get_mixed_inputs_1(train_inputs)
+
+            mixed_inputs = self.get_mixed_inputs(train_inputs)
+            train_inputs.extend(mixed_inputs)
+            train_targets.extend(train_targets)
 
             '''
             inner update phase
@@ -2681,6 +2687,7 @@ class MLDGSMMTrainer2(object):
             outer_opt_lr = self.get_lr(optimizer)
             inner_opt_lr = outer_opt_lr
             inner_optimizer = torch.optim.Adam(inner_net.module.get_params(), lr=inner_opt_lr, weight_decay=5e-4)
+            # inner_optimizer = torch.optim.SGD(inner_net.module.get_params(), lr=inner_opt_lr, weight_decay=0, momentum=0)
 
             inner_prob, inner_feat = inner_net(train_inputs)
             inner_prob = torch.cat(inner_prob, dim=0)
@@ -2740,6 +2747,7 @@ class MLDGSMMTrainer2(object):
                     m_outer.running_var.data = m_inner.running_var.data.clone()
                     m_outer.num_batches_tracked.data = m_inner.num_batches_tracked.data.clone()
 
+
             optimizer.step()
 
             losses.update(objective)
@@ -2795,8 +2803,8 @@ class MLDGSMMTrainer2(object):
         batch_indices = torch.randperm(inputs.shape[0])
         style_inputs = inputs[batch_indices]
         lam = random.random()  # lam in range 0 to 1
-        lam = lam * 0.5 + 0.5  # shrink to range 0.5 to 1
-        # lam = 1
+        # lam = lam * 0.5 + 0.5  # shrink to range 0.5 to 1
+        lam = 1
         mixed_inputs = adaptive_instance_normalization_v2(inputs, style_inputs, lam)
 
         mixed_inputs = torch.chunk(mixed_inputs, num_domains, dim=0)
@@ -2898,10 +2906,19 @@ class MLDGSMMTrainer3(object):
             inner_opt_lr = outer_opt_lr
             inner_optimizer = torch.optim.Adam(inner_net.module.get_params(), lr=inner_opt_lr, weight_decay=5e-4)
 
-            inner_prob, inner_feat = inner_net(train_inputs)
+            inner_prob, inner_feat = inner_net(train_inputs, meta_train=True)
             inner_prob = torch.cat(inner_prob, dim=0)
             inner_feat = torch.cat(inner_feat, dim=0)
             inner_targets = torch.cat(train_targets, dim=0)
+
+            # inner_prob, inner_feat, m_inner_prob, m_inner_feat = inner_net(train_inputs)
+            # inner_prob = torch.cat(inner_prob, dim=0)
+            # inner_feat = torch.cat(inner_feat, dim=0)
+            # m_inner_prob = torch.cat(m_inner_prob, dim=0)
+            # m_inner_feat = torch.cat(m_inner_feat, dim=0)
+            # inner_targets = torch.cat(train_targets, dim=0)
+            # inner_prob = torch.cat([inner_prob, m_inner_prob], dim=0)
+            # inner_feat = torch.cat([inner_feat, m_inner_feat], dim=0)
 
             loss_inner_ce = self.criterion_ce(inner_prob, inner_targets)
             loss_inner_tri = self.criterion_tri(inner_feat, inner_targets)
@@ -2925,7 +2942,7 @@ class MLDGSMMTrainer3(object):
             '''
             outer update phase
             '''
-            outer_prob, outer_feat = inner_net(test_inputs)
+            outer_prob, outer_feat = inner_net(test_inputs, meta_train=False)
 
             outer_prob = torch.cat(outer_prob, dim=0)
             outer_feat = torch.cat(outer_feat, dim=0)

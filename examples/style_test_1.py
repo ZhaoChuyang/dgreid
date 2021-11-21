@@ -32,13 +32,16 @@ from reid.utils.data import CommDataset
 from reid.utils.data import IterLoader
 from reid.utils.data import transforms as T
 from reid.utils.data.sampler import RandomMultipleGallerySampler
-from reid.utils.data.preprocessor import Preprocessor
+from reid.utils.data.preprocessor import Preprocessor, StylePreprocessor
 from reid.utils.logging import Logger
 from reid.utils.serialization import load_checkpoint, save_checkpoint, copy_state_dict
 from reid.utils.rerank import compute_jaccard_distance
 
 
 start_epoch = best_mAP = 0
+
+mean = torch.tensor([-0.44, -0.43, -0.23])
+std = torch.tensor([0.99, 0.96, 0.93])
 
 
 def get_data(name, data_dir, combineall=False):
@@ -81,7 +84,7 @@ def get_train_loader(args, dataset, height, width, batch_size, workers, num_inst
     return train_loader
 
 
-def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
+def get_test_loader(dataset, height, width, batch_size, workers, testset=None, stylized=False):
     normalizer = T.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
 
@@ -94,12 +97,57 @@ def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
     if (testset is None):
         testset = list(set(dataset.query) | set(dataset.gallery))
 
+    if stylized:
+        processor = StylePreprocessor(testset, root=dataset.images_dir, transform=test_transformer)
+    else:
+        processor = Preprocessor(testset, root=dataset.images_dir, transform=test_transformer)
+
     test_loader = DataLoader(
-        Preprocessor(testset, root=dataset.images_dir, transform=test_transformer),
+        processor,
         batch_size=batch_size, num_workers=workers,
         shuffle=False, pin_memory=False)
 
     return test_loader
+
+
+def calc_mean_std(feat, eps=1e-5):
+    # eps is a small value added to the variance to avoid divide-by-zero.
+    size = feat.size()
+    assert (len(size) == 4)
+    N, C = size[:2]
+    feat_var = feat.view(N, C, -1).var(dim=2) + eps
+    feat_std = feat_var.sqrt().view(N, C, 1, 1)
+    feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
+    return feat_mean, feat_std
+
+
+def get_mean_std(dataloader):
+    num_batches = len(dataloader)
+
+    mean = torch.zeros(3)
+    std = torch.zeros(3)
+    for iter in range(num_batches):
+        mini_batch = dataloader.next()['images']
+        b_mean, b_std = calc_mean_std(mini_batch)
+
+        mean += torch.mean(b_mean, dim=[0, 2, 3])
+        std += torch.mean(b_std, dim=[0, 2, 3])
+    mean /= num_batches
+    std /= num_batches
+
+
+    # mean /= num_batches
+    #
+    # dataloader.new_epoch()
+    # mean = mean.unsqueeze(1)
+    # mean = mean.unsqueeze(2)
+    # mean = mean.repeat(1, 256, 128)
+    # for iter in range(num_batches):
+    #     mini_batch = dataloader.next()['images']
+    #     std += torch.mean((mini_batch - mean) ** 2, dim=[0, 2, 3])
+    # std /= num_batches
+
+    return mean, std
 
 
 def create_model(args):
@@ -146,11 +194,20 @@ def main_worker(args):
     target_loaders = []
     target_datasets = []
     target_dataset_names = args.dataset_target.split(',')
+
     for target_dataset_name in target_dataset_names:
-        target_dataset = get_data(target_dataset_name, args.data_dir)
-        target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers)
-        target_loaders.append(target_loader)
-        target_datasets.append(target_dataset)
+        target_dataset_names = target_dataset_name.split('_')
+        if len(target_dataset_names) != 1:
+            target_dataset_name = target_dataset_names[0]
+            target_dataset = get_data(target_dataset_name, args.data_dir)
+            target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers, stylized=True)
+            target_loaders.append(target_loader)
+            target_datasets.append(target_dataset)
+        else:
+            target_dataset = get_data(target_dataset_name, args.data_dir)
+            target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers)
+            target_loaders.append(target_loader)
+            target_datasets.append(target_dataset)
 
     # dataset_target = get_data(args.dataset_target, args.data_dir)
     # test_loader_target = get_test_loader(dataset_target, args.height, args.width, args.batch_size, args.workers)
@@ -158,6 +215,11 @@ def main_worker(args):
                                            args.batch_size, args.workers, args.num_instances, iters)
 
     source_classes = dataset_source.num_train_pids
+
+    # mean, std = get_mean_std(train_loader_source)
+
+    # from IPython import embed
+    # embed()
 
     args.nclass = source_classes
 
@@ -168,7 +230,6 @@ def main_worker(args):
     # Evaluator
     evaluator = Evaluator(model)
     best_mAP = [0] * len(target_datasets)
-    current_mAP = [0] * len(target_datasets)
 
     # Optimizer
     params = [{"params": [value]} for _, value in model.named_parameters() if value.requires_grad]
@@ -210,21 +271,43 @@ def main_worker(args):
 
                 print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
 
-                current_mAP[target_id] = mAP
+                is_best = mAP > best_mAP[target_id]
+                best_mAP[target_id] = max(mAP, best_mAP[target_id])
 
-                print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}\n'.
-                      format(epoch, mAP, best_mAP[target_id]))
+                # save_checkpoint({
+                #     'state_dict': model.state_dict(),
+                #     'epoch': epoch + 1,
+                #     'best_mAP': best_mAP,
+                # }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
 
-            is_best = False
-            if sum(current_mAP) > sum(best_mAP): is_best = True
-            save_checkpoint({
-                'state_dict': model.state_dict(),
-                'epoch': epoch + 1,
-                'best_mAP': best_mAP,
-            }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
+                print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
+                      format(epoch, mAP, best_mAP[target_id], ' *' if is_best else ''))
 
-            for target_id in range(len(best_mAP)):
-                best_mAP[target_id] = max(current_mAP[target_id], best_mAP[target_id])
+            # print('Test on target: ', args.dataset_target)
+            # result_dict, mAP = evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
+            #
+            # # show results in table
+            # record = []
+            # record.append(epoch)
+            # record.append(target_dataset_name)
+            # record.append(result_dict['mAP'])
+            # record.append(result_dict['rank-1'])
+            # record.append(result_dict['rank-5'])
+            # record.append(result_dict['rank-10'])
+            # table.append(record)
+            #
+            # print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
+            #
+            # is_best = (mAP > best_mAP)
+            # best_mAP = max(mAP, best_mAP)
+            # save_checkpoint({
+            #     'state_dict': model.state_dict(),
+            #     'epoch': epoch + 1,
+            #     'best_mAP': best_mAP,
+            # }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
+            #
+            # print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
+            #       format(epoch, mAP, best_mAP, ' *' if is_best else ''))
 
         lr_scheduler.step()
     # print ('==> Test with the best model on the target domain:')

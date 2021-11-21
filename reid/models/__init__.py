@@ -14,6 +14,7 @@ from .resnet_smm_cy import resnet50_smm_cy
 from .resnet_mde import resnet50_mde
 from .resnet_mldg import resnet50_mldg
 from .resnet_mldg_smm import resnet50_mldg_smm
+from .resnet_ibn_mldg import resnet_ibn50a_mldg
 
 
 __factory = {
@@ -35,6 +36,7 @@ __factory = {
     'resnet50_mde': resnet50_mde,
     'resnet50_mldg': resnet50_mldg,
     'resnet50_mldg_smm': resnet50_mldg_smm,
+    'resnet_ibn50a_mldg': resnet_ibn50a_mldg
 }
 
 

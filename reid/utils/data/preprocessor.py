@@ -9,6 +9,7 @@ from PIL import Image
 import torch
 import pdb
 import scipy.io
+from ...models.layers.adain import adaptive_instance_normalization_v2
 
 
 class Preprocessor(Dataset):
@@ -36,6 +37,63 @@ class Preprocessor(Dataset):
 
         if self.transform is not None:
             img = self.transform(img)
+
+        return {
+            'images': img,
+            'fnames': fname,
+            'pids': pid,
+            'camids': camid,
+            'indices': index,
+        }
+
+
+
+class StylePreprocessor(Dataset):
+    def __init__(self, dataset, root=None, transform=None):
+        super(StylePreprocessor, self).__init__()
+        self.dataset = dataset
+        self.root = root
+        self.transform = transform
+        self.mean = torch.tensor([-0.4414, -0.4257, -0.2294]).unsqueeze(1).unsqueeze(2).repeat(1, 256, 128)
+        self.std = torch.tensor([0.9254, 0.9121, 0.8947]).unsqueeze(1).unsqueeze(2).repeat(1, 256, 128)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, indices):
+        return self._get_single_item(indices)
+
+    def calc_mean_std(self, feat, eps=1e-5):
+        # eps is a small value added to the variance to avoid divide-by-zero.
+        size = feat.size()
+        assert (len(size) == 4)
+        N, C = size[:2]
+        feat_var = feat.view(N, C, -1).var(dim=2) + eps
+        feat_std = feat_var.sqrt().view(N, C, 1, 1)
+        feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
+        return feat_mean, feat_std
+
+    def _get_single_item(self, index):
+        fname, pid, camid = self.dataset[index]
+
+        # fname, pid, camid = self.dataset[index]
+        fpath = fname
+        if self.root is not None:
+            fpath = osp.join(self.root, fname)
+
+        img = Image.open(fpath).convert('RGB')
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        # from IPython import embed
+        # embed()
+        # print(self.mean.shape, self.std.shape)
+        mean, std = self.calc_mean_std(img.unsqueeze(0))
+        mean = mean[0]
+        std = std[0]
+        size = img.shape
+        img = ((img - mean.expand(size)) / (std.expand(size))) * self.std + self.mean
 
         return {
             'images': img,
@@ -163,12 +221,54 @@ class AttrPreprocessor(Dataset):
         }
 
 
+class MixedStylePreprocessor(Dataset):
+    def __init__(self, dataset_cont, dataset_styl, root=None, transform=None):
+        super(MixedStylePreprocessor, self).__init__()
+        self.dataset_cont = dataset_cont
+        self.dataset_styl = dataset_styl
+        self.root = root
+        self.transform = transform
+        self.len_style_set = len(self.dataset_styl)
+
+    def __len__(self):
+        return len(self.dataset_cont)
+
+    def __getitem__(self, indices):
+        return self._get_single_item(indices)
+
+    def _get_single_item(self, index):
+        fname, pid, camid = self.dataset_cont[index]
+        s_fname, _, _ = self.dataset_styl[index % self.len_style_set]
+
+        # fname, pid, camid = self.dataset[index]
+        fpath = fname
+        s_fpath = s_fname
+        if self.root is not None:
+            fpath = osp.join(self.root, fname)
+            s_fpath = osp.join(self.root, s_fpath)
+
+        img = Image.open(fpath).convert('RGB')
+        s_img = Image.open(s_fpath).convert('RGB')
+
+        if self.transform is not None:
+            img = self.transform(img)
+            s_img = self.transform(s_img)
+
+        img = adaptive_instance_normalization_v2(torch.unsqueeze(img, 0), torch.unsqueeze(s_img, 0), 1)
+        img = torch.squeeze(img)
+
+        return {
+            'images': img,
+            'fnames': fname,
+            'pids': pid,
+            'camids': camid,
+            'indices': index,
+        }
+
+
 def get_market_attributes(arr):
     indices = arr['image_index'][0,0][0]
-    # attribute_names = ['age', 'backpack', 'bag', 'handbag', 'downblack', 'downblue', 'downbrown', 'downgray',
-    #                    'downgreen', 'downpink', 'downpurple', 'downwhite', 'downyellow', 'upblack', 'upblue', 'upgreen',
-    #                    'upgray', 'uppurple', 'upred', 'upwhite', 'upyellow', 'clothes', 'down', 'up', 'hair', 'hat',
-    #                    'gender']
+
     attribute_names = ['backpack',
                        'bag',
                        'handbag',

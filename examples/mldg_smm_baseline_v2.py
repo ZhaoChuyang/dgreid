@@ -35,7 +35,7 @@ from reid.utils.data.sampler import RandomMultipleGallerySampler
 from reid.utils.data.preprocessor import Preprocessor
 from reid.utils.logging import Logger
 from reid.utils.serialization import load_checkpoint, save_checkpoint, copy_state_dict
-from reid.utils.rerank import compute_jaccard_distance
+from reid.solver import WarmupMultiStepLR
 
 
 start_epoch = best_mAP = 0
@@ -162,9 +162,15 @@ def main_worker(args):
     relabel_datasets(dataset_source)
 
     print("==> Load target-domain dataset")
-    dataset_target = get_data(args.dataset_target, args.data_dir)
+    target_loaders = []
+    target_datasets = []
+    target_dataset_names = args.dataset_target.split(',')
+    for target_dataset_name in target_dataset_names:
+        target_dataset = get_data(target_dataset_name, args.data_dir)
+        target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers)
+        target_loaders.append(target_loader)
+        target_datasets.append(target_dataset)
 
-    test_loader_target = get_test_loader(dataset_target, args.height, args.width, args.batch_size, args.workers)
     train_loader_source = get_train_loader(args, dataset_source, args.height, args.width,
                                            args.batch_size, args.workers, args.num_instances, iters)
 
@@ -177,18 +183,22 @@ def main_worker(args):
 
     # Evaluator
     evaluator = Evaluator(model)
+    best_mAP = [0] * len(target_datasets)
 
     # Optimizer
     params = [{"params": [value]} for _, value in model.named_parameters() if value.requires_grad]
     optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
+    # optimizer = torch.optim.SGD(params, lr=0.1, momentum=0.9, weight_decay=5e-4)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=0.1)
     # lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[8, 20, 40, 60], gamma=0.1)
+    # milestones = [30, 50, 70]
+    # lr_scheduler = WarmupMultiStepLR(optimizer, milestones=[30, 50, 70], gamma=0.1, warmup_factor=0.01, warmup_iters=10, warmup_method="linear")
 
     # Trainer
     trainer = MLDGSMMTrainer2(model, args.nclass, margin=args.margin, mldg_beta=args.mldg_beta, num_domains=num_domains)
 
     table = []
-    header = ['Epoch', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']
+    header = ['Epoch', 'Dataset', 'mAP', 'Rank-1', 'Rank-5', 'Rank-10']
     table.append(header)
 
     for epoch in range(args.epochs):
@@ -197,39 +207,50 @@ def main_worker(args):
         # train_loader_target.new_epoch()
         trainer.train(epoch, train_loader_source, optimizer, print_freq=args.print_freq, train_iters=args.iters)
 
-        if ((epoch+1)%args.eval_step==0 or (epoch==args.epochs-1)):
+        if (epoch + 1) % args.eval_step == 0 or (epoch == args.epochs - 1):
+            current_mAP = [0] * len(target_datasets)
+            for target_id in range(len(target_datasets)):
+                target_dataset_name = target_dataset_names[target_id]
+                target_dataset = target_datasets[target_id]
+                target_loader = target_loaders[target_id]
+                print('Test on target: ', target_dataset_name)
+                result_dict, mAP = evaluator.evaluate(target_loader, target_dataset.query, target_dataset.gallery,
+                                                      cmc_flag=True)
 
-            print('Test on target: ', args.dataset_target)
-            result_dict, mAP = evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
+                # show results in table
+                record = list()
+                record.append(epoch)
+                record.append(target_dataset_name)
+                record.append(result_dict['mAP'])
+                record.append(result_dict['rank-1'])
+                record.append(result_dict['rank-5'])
+                record.append(result_dict['rank-10'])
+                table.append(record)
 
-            # show results in table
-            record = []
-            record.append(epoch)
-            record.append(result_dict['mAP'])
-            record.append(result_dict['rank-1'])
-            record.append(result_dict['rank-5'])
-            record.append(result_dict['rank-10'])
-            table.append(record)
+                print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
 
-            print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
+                current_mAP[target_id] = mAP
 
-            is_best = (mAP>best_mAP)
-            best_mAP = max(mAP, best_mAP)
+                print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}\n'.
+                      format(epoch, mAP, best_mAP[target_id]))
+
+            is_best = False
+            if sum(current_mAP) > sum(best_mAP): is_best = True
             save_checkpoint({
                 'state_dict': model.state_dict(),
                 'epoch': epoch + 1,
                 'best_mAP': best_mAP,
             }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
 
-            print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
-                  format(epoch, mAP, best_mAP, ' *' if is_best else ''))
+            for target_id in range(len(best_mAP)):
+                best_mAP[target_id] = max(current_mAP[target_id], best_mAP[target_id])
 
         lr_scheduler.step()
 
-    print ('==> Test with the best model on the target domain:')
-    checkpoint = load_checkpoint(osp.join(args.logs_dir, 'model_best.pth.tar'))
-    model.load_state_dict(checkpoint['state_dict'])
-    evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
+    # print ('==> Test with the best model on the target domain:')
+    # checkpoint = load_checkpoint(osp.join(args.logs_dir, 'model_best.pth.tar'))
+    # model.load_state_dict(checkpoint['state_dict'])
+    # evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
 
     end_time = time.monotonic()
     print('Total running time: ', timedelta(seconds=end_time - start_time))

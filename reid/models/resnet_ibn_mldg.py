@@ -1,53 +1,35 @@
 from __future__ import absolute_import
 
+import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn import init
-import torchvision
-from collections import OrderedDict
+from .resnet_ibn_a import resnet50_ibn_a, resnet101_ibn_a
 
 
-__all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
-           'resnet152']
+__all__ = ['ResNetIBN', 'resnet_ibn50a', 'resnet_ibn101a', 'resnet_ibn50a_mldg']
 
 
-class ResNet(nn.Module):
+class ResNetIBN(nn.Module):
     __factory = {
-        18: torchvision.models.resnet18,
-        34: torchvision.models.resnet34,
-        50: torchvision.models.resnet50,
-        101: torchvision.models.resnet101,
-        152: torchvision.models.resnet152,
+        '50a': resnet50_ibn_a,
+        '101a': resnet101_ibn_a
     }
 
     def __init__(self, depth, pretrained=True, cut_at_pooling=False,
                  num_features=0, norm=False, dropout=0, num_classes=0):
-        super(ResNet, self).__init__()
-        self.pretrained = pretrained
+        super(ResNetIBN, self).__init__()
+
         self.depth = depth
+        self.pretrained = pretrained
         self.cut_at_pooling = cut_at_pooling
-        # Construct base (pretrained) resnet
-        if depth not in ResNet.__factory:
-            raise KeyError("Unsupported depth:", depth)
-        resnet = ResNet.__factory[depth](pretrained=pretrained)
-        resnet.layer4[0].conv2.stride = (1,1)
-        resnet.layer4[0].downsample[0].stride = (1,1)
-        # self.base = nn.Sequential(
-        #     resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
-        #     resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4)
 
-        self.conv = nn.Sequential(OrderedDict([
-            ('conv1', resnet.conv1),
-            ('bn1', resnet.bn1),
-            ('relu', resnet.relu),
-            ('maxpool', resnet.maxpool)]))
-
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
-
-
+        resnet = ResNetIBN.__factory[depth](pretrained=pretrained)
+        resnet.layer4[0].conv2.stride = (1, 1)
+        resnet.layer4[0].downsample[0].stride = (1, 1)
+        self.base = nn.Sequential(
+            resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
+            resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4)
         self.gap = nn.AdaptiveAvgPool2d(1)
 
         if not self.cut_at_pooling:
@@ -81,17 +63,12 @@ class ResNet(nn.Module):
         if not pretrained:
             self.reset_params()
 
-    def forward(self, x, output_prob=False, return_featuremaps=False):
-        bs = x.size(0)
-        # x = self.base(x)
-        x = self.conv(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+    def forward(self, x):
+        if self.training:
+            num_domains = len(x)
+            x = torch.cat(x, dim=0)
 
-        if return_featuremaps:
-            return x
+        x = self.base(x)
 
         x = self.gap(x)
         x = x.view(x.size(0), -1)
@@ -104,12 +81,12 @@ class ResNet(nn.Module):
         else:
             bn_x = self.feat_bn(x)
 
-        if (self.training is False and output_prob is False):
+        if self.training is False:
             bn_x = F.normalize(bn_x)
-            return x
+            return bn_x
 
         if self.norm:
-            norm_bn_x = F.normalize(bn_x)
+            bn_x = F.normalize(bn_x)
         elif self.has_embedding:
             bn_x = F.relu(bn_x)
 
@@ -121,10 +98,10 @@ class ResNet(nn.Module):
         else:
             return bn_x
 
-        if self.norm:
-            return prob, x, norm_bn_x
-        else:
-            return prob, x
+        prob = torch.chunk(prob, num_domains, dim=0)
+        x = torch.chunk(x, num_domains, dim=0)
+
+        return prob, x
 
     def reset_params(self):
         for m in self.modules():
@@ -143,22 +120,19 @@ class ResNet(nn.Module):
                 if m.bias is not None:
                     init.constant_(m.bias, 0)
 
-
-def resnet18(**kwargs):
-    return ResNet(18, **kwargs)
-
-
-def resnet34(**kwargs):
-    return ResNet(34, **kwargs)
+    def get_params(self):
+        for param in self.parameters():
+            if param.requires_grad:
+                yield param
 
 
-def resnet50(**kwargs):
-    return ResNet(50, **kwargs)
+def resnet_ibn50a(**kwargs):
+    return ResNetIBN('50a', **kwargs)
 
 
-def resnet101(**kwargs):
-    return ResNet(101, **kwargs)
+def resnet_ibn101a(**kwargs):
+    return ResNetIBN('101a', **kwargs)
 
 
-def resnet152(**kwargs):
-    return ResNet(152, **kwargs)
+def resnet_ibn50a_mldg(**kwargs):
+    return ResNetIBN('50a', **kwargs)

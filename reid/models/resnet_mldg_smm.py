@@ -129,8 +129,12 @@ class ResNet(nn.Module):
 
         prob = self.classifier(bn_x)
 
+        # prob, mixed_prob = torch.chunk(prob, 2, dim=0)
         prob = torch.chunk(prob, num_domains, dim=0)
+        # mixed_prob = torch.chunk(mixed_prob, num_domains, dim=0)
+        # x, mixed_x = torch.chunk(x, 2, dim=0)
         x = torch.chunk(x, num_domains, dim=0)
+        # mixed_x = torch.chunk(mixed_x, num_domains, dim=0)
 
         return prob, x
 

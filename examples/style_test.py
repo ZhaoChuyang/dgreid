@@ -32,13 +32,17 @@ from reid.utils.data import CommDataset
 from reid.utils.data import IterLoader
 from reid.utils.data import transforms as T
 from reid.utils.data.sampler import RandomMultipleGallerySampler
-from reid.utils.data.preprocessor import Preprocessor
+from reid.utils.data.preprocessor import Preprocessor, MixedStylePreprocessor
 from reid.utils.logging import Logger
 from reid.utils.serialization import load_checkpoint, save_checkpoint, copy_state_dict
 from reid.utils.rerank import compute_jaccard_distance
 
 
 start_epoch = best_mAP = 0
+
+stylize_train = True
+style_dataset = 'cuhk03'
+train_dataset = 'market1501'
 
 
 def get_data(name, data_dir, combineall=False):
@@ -48,7 +52,7 @@ def get_data(name, data_dir, combineall=False):
     return dataset
 
 
-def get_train_loader(args, dataset, height, width, batch_size, workers, num_instances, iters, trainset=None):
+def get_train_loader(args, dataset, height, width, batch_size, workers, num_instances, iters, dataset_style=None, trainset=None):
 
     normalizer = T.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
@@ -68,7 +72,10 @@ def get_train_loader(args, dataset, height, width, batch_size, workers, num_inst
     else:
         sampler = None
 
-    preprocessor = Preprocessor(train_set, root=dataset.images_dir, transform=train_transformer)
+    if dataset_style:
+        preprocessor = MixedStylePreprocessor(train_set, dataset_style.train, root=dataset.images_dir, transform=train_transformer)
+    else:
+        preprocessor = Preprocessor(train_set, root=dataset.images_dir, transform=train_transformer)
     loader = DataLoader(preprocessor,
                         batch_size=batch_size,
                         num_workers=workers,
@@ -81,7 +88,7 @@ def get_train_loader(args, dataset, height, width, batch_size, workers, num_inst
     return train_loader
 
 
-def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
+def get_test_loader(dataset, height, width, batch_size, workers, dataset_style=None, testset=None):
     normalizer = T.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
 
@@ -92,10 +99,15 @@ def get_test_loader(dataset, height, width, batch_size, workers, testset=None):
          ])
 
     if (testset is None):
+        dataset.query = [tuple(r) for r in dataset.query]
+        dataset.gallery = [tuple(r) for r in dataset.gallery]
         testset = list(set(dataset.query) | set(dataset.gallery))
-
+    if dataset_style:
+        preprocessor = MixedStylePreprocessor(testset, dataset_style.train, root=dataset.images_dir, transform=test_transformer)
+    else:
+        preprocessor = Preprocessor(testset, root=dataset.images_dir, transform=test_transformer)
     test_loader = DataLoader(
-        Preprocessor(testset, root=dataset.images_dir, transform=test_transformer),
+        preprocessor,
         batch_size=batch_size, num_workers=workers,
         shuffle=False, pin_memory=False)
 
@@ -142,20 +154,38 @@ def main_worker(args):
         train_items.extend(dataset.train)
     dataset_source = CommDataset(train_items)
 
+    market = get_data(train_dataset, args.data_dir, False)
+    duke = get_data(style_dataset, args.data_dir, False)
+    market_set = CommDataset(market.train)
+    duke_set = CommDataset(duke.train)
+
     print("==> Load target-domain dataset")
     target_loaders = []
     target_datasets = []
     target_dataset_names = args.dataset_target.split(',')
     for target_dataset_name in target_dataset_names:
-        target_dataset = get_data(target_dataset_name, args.data_dir)
-        target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers)
-        target_loaders.append(target_loader)
-        target_datasets.append(target_dataset)
+        target_dataset_name = target_dataset_name.split('_')
+        if len(target_dataset_name) != 1:
+            target_dataset_name = target_dataset_name[0]
+            target_dataset = get_data(target_dataset_name, args.data_dir)
+            target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers, dataset_style=market_set)
+            target_loaders.append(target_loader)
+            target_datasets.append(target_dataset)
+        else:
+            target_dataset_name = target_dataset_name[0]
+            target_dataset = get_data(target_dataset_name, args.data_dir)
+            target_loader = get_test_loader(target_dataset, args.height, args.width, args.batch_size, args.workers)
+            target_loaders.append(target_loader)
+            target_datasets.append(target_dataset)
 
     # dataset_target = get_data(args.dataset_target, args.data_dir)
     # test_loader_target = get_test_loader(dataset_target, args.height, args.width, args.batch_size, args.workers)
+    if stylize_train:
+        dataset_style = duke_set
+    else:
+        dataset_style = None
     train_loader_source = get_train_loader(args, dataset_source, args.height, args.width,
-                                           args.batch_size, args.workers, args.num_instances, iters)
+                                           args.batch_size, args.workers, args.num_instances, iters, dataset_style=dataset_style)
 
     source_classes = dataset_source.num_train_pids
 
@@ -168,7 +198,6 @@ def main_worker(args):
     # Evaluator
     evaluator = Evaluator(model)
     best_mAP = [0] * len(target_datasets)
-    current_mAP = [0] * len(target_datasets)
 
     # Optimizer
     params = [{"params": [value]} for _, value in model.named_parameters() if value.requires_grad]
@@ -210,21 +239,43 @@ def main_worker(args):
 
                 print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
 
-                current_mAP[target_id] = mAP
+                is_best = mAP > best_mAP[target_id]
+                best_mAP[target_id] = max(mAP, best_mAP[target_id])
 
-                print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}\n'.
-                      format(epoch, mAP, best_mAP[target_id]))
+                # save_checkpoint({
+                #     'state_dict': model.state_dict(),
+                #     'epoch': epoch + 1,
+                #     'best_mAP': best_mAP,
+                # }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
 
-            is_best = False
-            if sum(current_mAP) > sum(best_mAP): is_best = True
-            save_checkpoint({
-                'state_dict': model.state_dict(),
-                'epoch': epoch + 1,
-                'best_mAP': best_mAP,
-            }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
+                print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
+                      format(epoch, mAP, best_mAP[target_id], ' *' if is_best else ''))
 
-            for target_id in range(len(best_mAP)):
-                best_mAP[target_id] = max(current_mAP[target_id], best_mAP[target_id])
+            # print('Test on target: ', args.dataset_target)
+            # result_dict, mAP = evaluator.evaluate(test_loader_target, dataset_target.query, dataset_target.gallery, cmc_flag=True)
+            #
+            # # show results in table
+            # record = []
+            # record.append(epoch)
+            # record.append(target_dataset_name)
+            # record.append(result_dict['mAP'])
+            # record.append(result_dict['rank-1'])
+            # record.append(result_dict['rank-5'])
+            # record.append(result_dict['rank-10'])
+            # table.append(record)
+            #
+            # print(tabulate.tabulate(table, headers='firstrow', tablefmt='github', floatfmt='.2%'))
+            #
+            # is_best = (mAP > best_mAP)
+            # best_mAP = max(mAP, best_mAP)
+            # save_checkpoint({
+            #     'state_dict': model.state_dict(),
+            #     'epoch': epoch + 1,
+            #     'best_mAP': best_mAP,
+            # }, is_best, fpath=osp.join(args.logs_dir, 'checkpoint.pth.tar'))
+            #
+            # print('\n * Finished epoch {:3d}  model mAP: {:5.1%}  best: {:5.1%}{}\n'.
+            #       format(epoch, mAP, best_mAP, ' *' if is_best else ''))
 
         lr_scheduler.step()
     # print ('==> Test with the best model on the target domain:')

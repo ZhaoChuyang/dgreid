@@ -83,7 +83,7 @@ class ResNet(nn.Module):
         if not pretrained:
             self.reset_params()
 
-    def forward(self, x, output_prob=False):
+    def forward(self, x, output_prob=False, return_featuremaps=False):
         if self.training:
             num_domains = len(x)
             x = torch.cat(x, dim=0)
@@ -93,6 +93,9 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
+
+        if return_featuremaps:
+            return x
 
         x = self.gap(x)
         x = x.view(x.size(0), -1)

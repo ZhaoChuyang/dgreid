@@ -36,6 +36,48 @@ class CommDataset(BaseImageDataset):
             self.print_dataset_statistics(self.train, self.query, self.gallery)
 
 
+# class MixedStyleDataset(BaseImageDataset):
+#     """Image Person ReID Dataset, combine all datasets"""
+#
+#     def __init__(self, cont_img_items, styl_img_items, verbose=True):
+#         super(MixedStyleDataset, self).__init__()
+#         self.cont_img_items = cont_img_items
+#         self.styl_img_items = styl_img_items
+#
+#         pid_set = set()
+#         cam_set = set()
+#         for i in cont_img_items:
+#             pid_set.add(i[1])
+#             cam_set.add(i[2])
+#
+#         self.pids = sorted(list(pid_set))
+#         self.cams = sorted(list(cam_set))
+#
+#         self.pid_dict = dict([(p, i) for i, p in enumerate(self.pids)])
+#         self.cam_dict = dict([(p, i) for i, p in enumerate(self.cams)])
+#
+#         train = [(img, self.pid_dict[pid], self.cam_dict[camid], style_img) for img, pid, camid, style_img, _, _ in zip(cont_img_items, styl_img_items)]
+#         self.train = train
+#         self.query = []
+#         self.gallery = []
+#         self.num_train_pids, self.num_train_imgs, self.num_train_cams = self.get_imagedata_info(self.train)
+#         if verbose:
+#             print("=> Combine-all-reID loaded")
+#             self.print_dataset_statistics(self.train, self.query, self.gallery)
+#
+#     def get_imagedata_info(self, data):
+#         pids, cams = [], []
+#         for _, pid, camid, _ in data:
+#             pids += [pid]
+#             cams += [camid]
+#         pids = set(pids)
+#         cams = set(cams)
+#         num_pids = len(pids)
+#         num_cams = len(cams)
+#         num_imgs = len(data)
+#         return num_pids, num_imgs, num_cams
+
+
 class DomainDataset(BaseImageDataset):
     """Image Person ReID Dataset, combine all datasets"""
 

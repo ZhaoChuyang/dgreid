@@ -295,3 +295,4 @@ class CUHK03(BaseImageDataset):
         # with PathManager.open(self.split_new_lab_json_path, 'w') as f:
         #     json.dump(split, f, indent=4, separators=(',', ': '))
         write_json(split, self.split_new_lab_json_path)
+
