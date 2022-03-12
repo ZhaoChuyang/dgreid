@@ -87,17 +87,20 @@ class ResNet(nn.Module):
         if not pretrained:
             self.reset_params()
 
-    def forward(self, x, meta_train=False, output_prob=False):
+    def forward(self, x, meta_train=True, output_prob=False, return_featuremaps=False):
         if self.training:
             num_domains = len(x)
             x = torch.cat(x, dim=0)
 
         x = self.conv(x)
 
-        if self.training and meta_train:
+        # NOTE: change to 'if self.training and meta_train:'
+        if meta_train:
             mixed_x, _ = self.smm_block(x)
+            if return_featuremaps:
+                return [x, mixed_x]
             x = mixed_x
-            # x = torch.cat([x, mixed_x], dim=0)
+
 
         x = self.layer1(x)
         x = self.layer2(x)
